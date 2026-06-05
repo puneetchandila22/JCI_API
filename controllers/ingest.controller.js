@@ -1,32 +1,32 @@
 import { Machine } from '../models/machine.model.js';
 import { Telemetry } from '../models/telemetry.model.js';
 
-// POST /api/v1/ingest/:machineId   (PLC engineers call this)
-// Header: x-api-key: <machine apiKey>
-// Body:   { machineId, timestamp, data: { ...any readings... } }
+// POST /api/v1/ingest
+// The COMPANY sends machineId, machineName, machineType themselves.
+// We auto-create the machine the first time we see it (no pre-seeding needed).
+//
+// Header: x-api-key: <shared project key from .env>
+// Body:   { machineId, machineName?, machineType?, timestamp?, data: {...} }
 export async function ingest(req, res) {
   try {
-    const { machineId } = req.params;
-    const apiKey = req.headers['x-api-key'];
-
-    // 1. Authenticate the machine by id + key (the only thing that's fixed)
-    const machine = await Machine.findOne({ machineId });
-    if (!machine) {
-      return res.status(404).json({ success: false, error: 'Unknown machineId' });
-    }
-    if (!apiKey || apiKey !== machine.apiKey) {
-      return res.status(401).json({ success: false, error: 'Invalid or missing x-api-key' });
+    // 1. One shared key for the whole project (simple for the PLC team).
+    //    If INGEST_KEY is not set in .env, key check is skipped (dev mode).
+    const expected = process.env.INGEST_KEY;
+    if (expected && req.headers['x-api-key'] !== expected) {
+      return res.status(401).json({ success: false, error: 'Invalid x-api-key' });
     }
 
-    // 2. Validate ONLY the envelope — never the shape of `data`
-    const { timestamp, data } = req.body;
+    const { machineId, machineName, machineType, timestamp, data } = req.body;
+
+    // 2. machineId + data are the only required things
+    if (!machineId) {
+      return res.status(400).json({ success: false, error: 'machineId is required' });
+    }
     if (!data || typeof data !== 'object' || Array.isArray(data)) {
-      return res
-        .status(400)
-        .json({ success: false, error: '`data` must be a JSON object of readings' });
+      return res.status(400).json({ success: false, error: '`data` must be a JSON object of readings' });
     }
 
-    // 3. Store the reading verbatim — no schema, no migration ever needed
+    // 3. Store the reading verbatim — any shape
     await Telemetry.create({
       machineId,
       deviceTs: timestamp ? new Date(timestamp) : null,
@@ -34,16 +34,23 @@ export async function ingest(req, res) {
       data,
     });
 
-    // 4. Schema discovery: remember which keys this machine sends
+    // 4. Auto-create the machine on first sight; update info + discovered keys.
+    //    upsert:true means "create if it doesn't exist, otherwise update".
     await Machine.updateOne(
       { machineId },
       {
+        $setOnInsert: { machineId },                     // set only when first created
+        $set: {
+          ...(machineName ? { name: machineName } : {}),
+          ...(machineType ? { type: machineType } : {}),
+          status: 'active',
+          lastSeen: new Date(),
+        },
         $addToSet: { metricsSeen: { $each: Object.keys(data) } },
-        $set: { status: 'active', lastSeen: new Date() },
-      }
+      },
+      { upsert: true }
     );
 
-    // 202 Accepted — return fast so the PLC isn't blocked
     return res.status(202).json({ success: true, message: 'reading stored' });
   } catch (err) {
     console.error('ingest error:', err);
@@ -51,19 +58,19 @@ export async function ingest(req, res) {
   }
 }
 
-// GET /api/v1/machines/:machineId/latest  — newest reading (for cards/testing)
+// GET /api/v1/machines/:machineId/latest
 export async function latest(req, res) {
-  const { machineId } = req.params;
-  const doc = await Telemetry.findOne({ machineId }).sort({ serverTs: -1 }).lean();
+  const doc = await Telemetry.findOne({ machineId: req.params.machineId })
+    .sort({ serverTs: -1 })
+    .lean();
   if (!doc) return res.status(404).json({ success: false, error: 'no data yet' });
   return res.json({ success: true, data: doc });
 }
 
-// GET /api/v1/machines/:machineId/history?limit=50  — recent readings
+// GET /api/v1/machines/:machineId/history?limit=50
 export async function history(req, res) {
-  const { machineId } = req.params;
   const limit = Math.min(parseInt(req.query.limit) || 50, 500);
-  const docs = await Telemetry.find({ machineId })
+  const docs = await Telemetry.find({ machineId: req.params.machineId })
     .sort({ serverTs: -1 })
     .limit(limit)
     .lean();
@@ -72,9 +79,8 @@ export async function history(req, res) {
 
 // GET /api/v1/machines/:machineId/schema  — what fields has this machine actually sent?
 export async function discoveredSchema(req, res) {
-  const { machineId } = req.params;
   const rows = await Telemetry.aggregate([
-    { $match: { machineId } },
+    { $match: { machineId: req.params.machineId } },
     { $sort: { serverTs: -1 } },
     { $limit: 200 },
     { $project: { fields: { $objectToArray: '$data' } } },
@@ -89,5 +95,5 @@ export async function discoveredSchema(req, res) {
     },
     { $sort: { _id: 1 } },
   ]);
-  return res.json({ success: true, machineId, fields: rows });
+  return res.json({ success: true, machineId: req.params.machineId, fields: rows });
 }

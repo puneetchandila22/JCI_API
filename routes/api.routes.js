@@ -5,7 +5,8 @@ import { listMachines, getMachine } from '../controllers/machine.controller.js';
 const router = Router();
 
 // --- Ingestion (called by the company's PLC engineers) ---
-router.post('/ingest/:machineId', ingest);
+// machineId is now in the BODY, not the URL — the company assigns it.
+router.post('/ingest', ingest);
 
 // --- Machines ---
 router.get('/machines', listMachines);

@@ -6,7 +6,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch server.js",
+    "dev": "node server.js",
     "seed": "node scripts/seedMachines.js",
     "simulate": "node scripts/simulate.js"
   },
@@ -14,8 +14,8 @@
   "author": "ITSYBIZZ AI Private Limited",
   "license": "ISC",
   "dependencies": {
-    "dotenv": "^16.4.5",
-    "express": "^4.21.2",
-    "mongoose": "^8.9.5"
+    "dotenv": "^16.6.1",
+    "express": "^4.22.2",
+    "mongoose": "^8.24.0"
   }
 }
